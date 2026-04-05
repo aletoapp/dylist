@@ -1,11 +1,17 @@
 /**
- * YouList Ad Blocker System v3.0
+ * YouList Ad Blocker System v3.1
  * Estratégia real de bloqueio de anúncios no YouTube IFrame Player
- * - Detecta estado de anúncio via playerState + getVideoLoadedFraction
- * - Pula automaticamente ao detectar anúncio rodando
- * - Muta o áudio durante o intervalo de detecção
- * - CSS blocking para anúncios externos
- * - SponsorBlock-like para segmentos manuais
+ *
+ * MODO SEGURO (padrão, 2026):
+ *   - CSS Blocking: oculta anúncios externos, NUNCA toca no #player
+ *   - SponsorSkip: pula segmentos manuais via seekTo() (API nativa, indetectável)
+ *   - DOM Observer: DESATIVADO por padrão — ativar via console se necessário:
+ *       window.youlistAdBlocker.enableDOMObserver()
+ *
+ * Por que DOM Observer desativado?
+ *   Desde fev/2026 o YouTube detecta MutationObservers no body e aplica
+ *   "buffering artificial" e force-skip como punição. O CSS Blocking é
+ *   aplicado via <style> antes do player carregar e é praticamente indetectável.
  */
 
 class YouListAdBlocker {
@@ -16,9 +22,14 @@ class YouListAdBlocker {
     this.isMarking = false;
     this.markStartTime = null;
 
+    // DOM Observer DESATIVADO por padrão (2026 — evita detecção pelo YouTube)
+    // Para reativar: window.youlistAdBlocker.enableDOMObserver()
+    this._domObserverEnabled = false;
+    this._domObserver = null;
+
     // Controle anti-loop do skip de anúncio
     this._lastAdSkipTime = 0;
-    this._adSkipCooldown = 3000; // ms entre tentativas
+    this._adSkipCooldown = 3000;
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => this.init());
@@ -28,14 +39,33 @@ class YouListAdBlocker {
   }
 
   init() {
-    if (typeof logger !== 'undefined') logger.info('Ad Blocker v3.0 inicializando...');
+    if (typeof logger !== 'undefined') logger.info('Ad Blocker v3.1 inicializando (modo seguro 2026)...');
     this.loadSponsorDatabase();
     this.applyCSSBlocking();
-    this.startDOMObserver();
+    // DOM Observer desativado por padrão — reativar com enableDOMObserver() se necessário
+    if (this._domObserverEnabled) this.startDOMObserver();
     this.startAdDetectionLoop();
     this.initSponsorSkip();
     this.initUI();
-    if (typeof logger !== 'undefined') logger.success('Ad Blocker v3.0 ativo');
+    if (typeof logger !== 'undefined') logger.success('Ad Blocker v3.1 ativo — modo seguro');
+  }
+
+  // API pública: reativa DOM Observer (use apenas se CSS blocking não for suficiente)
+  enableDOMObserver() {
+    if (this._domObserver) return;
+    this._domObserverEnabled = true;
+    this.startDOMObserver();
+    if (typeof logger !== 'undefined') logger.warn('DOM Observer ativado manualmente — pode ser detectado pelo YouTube');
+    console.warn('%c⚠️ DOM Observer ativado. Se o vídeo começar a pular para o fim, desative com: window.youlistAdBlocker.disableDOMObserver()', 'color:#f59e0b;font-weight:bold;');
+  }
+
+  disableDOMObserver() {
+    if (this._domObserver) {
+      this._domObserver.disconnect();
+      this._domObserver = null;
+    }
+    this._domObserverEnabled = false;
+    if (typeof logger !== 'undefined') logger.info('DOM Observer desativado');
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -186,7 +216,7 @@ class YouListAdBlocker {
       'iframe[src*="googlesyndication"]'
     ];
 
-    const observer = new MutationObserver((mutations) => {
+    this._domObserver = new MutationObserver((mutations) => {
       mutations.forEach(mutation => {
         mutation.addedNodes.forEach(node => {
           if (node.nodeType !== 1) return;
@@ -198,7 +228,7 @@ class YouListAdBlocker {
       });
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    this._domObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   checkAndRemoveAd(element, selectors) {
@@ -438,4 +468,5 @@ document.head.appendChild(_abStyle);
 window.youlistAdBlocker = new YouListAdBlocker();
 window.adBlockerStats = () => { const s = window.youlistAdBlocker.getStats(); console.log('📊 Ad Blocker Stats:', s); return s; };
 
-console.log('%c🛡️ YouList Ad Blocker v3.0 carregado!', 'color:#667eea;font-size:14px;font-weight:bold;');
+console.log('%c🛡️ YouList Ad Blocker v3.1 — Modo Seguro 2026', 'color:#667eea;font-size:14px;font-weight:bold;');
+console.log('%cDOM Observer desativado por padrão. Para ativar: window.youlistAdBlocker.enableDOMObserver()', 'color:#94a3b8;font-size:11px;');
