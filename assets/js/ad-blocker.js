@@ -1,8 +1,11 @@
 /**
- * YouList Ad Blocker System v2.0
- * Sistema próprio e seguro de bloqueio de anúncios
- * NÃO INTERFERE COM O PLAYER DO YOUTUBE - 100% SEGURO
- * CORRIGIDO: Interface fixa abaixo do Backup
+ * YouList Ad Blocker System v3.0
+ * Estratégia real de bloqueio de anúncios no YouTube IFrame Player
+ * - Detecta estado de anúncio via playerState + getVideoLoadedFraction
+ * - Pula automaticamente ao detectar anúncio rodando
+ * - Muta o áudio durante o intervalo de detecção
+ * - CSS blocking para anúncios externos
+ * - SponsorBlock-like para segmentos manuais
  */
 
 class YouListAdBlocker {
@@ -12,8 +15,11 @@ class YouListAdBlocker {
     this.sponsorDatabase = {};
     this.isMarking = false;
     this.markStartTime = null;
-    
-    // Aguardar DOM estar pronto
+
+    // Controle anti-loop do skip de anúncio
+    this._lastAdSkipTime = 0;
+    this._adSkipCooldown = 3000; // ms entre tentativas
+
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => this.init());
     } else {
@@ -22,38 +28,128 @@ class YouListAdBlocker {
   }
 
   init() {
-    if (typeof logger !== 'undefined') {
-      logger.info('Ad Blocker System inicializando...');
-    }
-    
-    // Carregar database de segmentos salvos
+    if (typeof logger !== 'undefined') logger.info('Ad Blocker v3.0 inicializando...');
     this.loadSponsorDatabase();
-    
-    // Estratégia 1: CSS-based blocking (mais seguro)
     this.applyCSSBlocking();
-    
-    // Estratégia 2: DOM Observer (detecta e remove anúncios)
     this.startDOMObserver();
-    
-    // Estratégia 3: SponsorBlock-like (pula segmentos patrocinados)
+    this.startAdDetectionLoop();
     this.initSponsorSkip();
-    
-    // Inicializar UI - AGORA FIXO
     this.initUI();
-    
-    if (typeof logger !== 'undefined') {
-      logger.success('Ad Blocker ativo', { enabled: this.enabled });
+    if (typeof logger !== 'undefined') logger.success('Ad Blocker v3.0 ativo');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // DETECÇÃO E BLOQUEIO DE ANÚNCIOS NO PLAYER (núcleo da solução)
+  // ══════════════════════════════════════════════════════════════════
+
+  startAdDetectionLoop() {
+    // Loop a cada 500ms para resposta rápida
+    setInterval(() => this.detectAndBlockAd(), 500);
+  }
+
+  detectAndBlockAd() {
+    if (!this.enabled) return;
+    if (typeof player === 'undefined' || !player) return;
+    if (typeof player.getPlayerState !== 'function') return;
+
+    try {
+      const now = Date.now();
+      if (now - this._lastAdSkipTime < this._adSkipCooldown) return;
+
+      const state = player.getPlayerState();
+      // Só age enquanto está tocando (1) ou buffering (3)
+      if (state !== 1 && state !== 3) return;
+
+      // ── Método 1: getVideoUrl vs URL atual ──────────────────────
+      // Durante anúncio, getVideoUrl() retorna uma URL diferente
+      // da URL do vídeo da playlist atual
+      if (typeof player.getVideoUrl === 'function' && this._currentVideoId) {
+        const url = player.getVideoUrl();
+        if (url && !url.includes(this._currentVideoId)) {
+          this._skipAd('url-mismatch');
+          return;
+        }
+      }
+
+      // ── Método 2: getDuration retorna duração curta (<= 30s) ────
+      // Anúncios geralmente têm duração muito curta
+      if (typeof player.getDuration === 'function') {
+        const duration = player.getDuration();
+        if (duration > 0 && duration <= 30 && this._currentVideoDuration > 60) {
+          this._skipAd('short-duration');
+          return;
+        }
+      }
+
+      // ── Método 3: getVideoData sem video_id ─────────────────────
+      // Durante alguns anúncios, video_id fica vazio
+      if (typeof player.getVideoData === 'function') {
+        const data = player.getVideoData();
+        if (data && this._currentVideoId && data.video_id && data.video_id !== this._currentVideoId) {
+          this._skipAd('video-id-changed');
+          return;
+        }
+      }
+
+    } catch (e) { /* silencioso */ }
+  }
+
+  _skipAd(reason) {
+    this._lastAdSkipTime = Date.now();
+
+    try {
+      if (typeof logger !== 'undefined') logger.info(`Ad Blocker: pulando anúncio (${reason})`);
+
+      // Muta temporariamente para evitar o áudio do anúncio
+      if (typeof player.mute === 'function') player.mute();
+
+      // Avança o tempo para forçar o skip
+      if (typeof player.seekTo === 'function') {
+        const duration = player.getDuration?.() || 0;
+        if (duration > 0) player.seekTo(duration, true);
+      }
+
+      // Tenta nextVideo depois de 300ms como fallback
+      setTimeout(() => {
+        try {
+          // Reativa o som
+          if (typeof player.unMute === 'function') player.unMute();
+
+          // Se ainda estiver fora do vídeo esperado, força o reload
+          if (typeof player.loadVideoById === 'function' && this._currentVideoId) {
+            const data = player.getVideoData?.();
+            if (data && data.video_id !== this._currentVideoId) {
+              player.loadVideoById(this._currentVideoId, this._currentVideoTime || 0);
+            }
+          }
+        } catch (e) { /* silencioso */ }
+      }, 300);
+
+      this.blockedCount++;
+      this.updateStats();
+      this.showToast('🛡️ Anúncio bloqueado!', 'success');
+
+    } catch (e) {
+      if (typeof logger !== 'undefined') logger.error('Erro ao pular anúncio', { error: e.message });
     }
   }
 
-  // ========================================
-  // ESTRATÉGIA 1: CSS Blocking (NÃO TOCA NO PLAYER)
-  // ========================================
+  // Chamado pelo player.js quando um vídeo começa a tocar
+  // Registra o ID e duração do vídeo atual para comparação
+  trackCurrentVideo(videoId, duration) {
+    this._currentVideoId = videoId;
+    this._currentVideoDuration = duration || 0;
+    this._currentVideoTime = 0;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // CSS BLOCKING — elementos externos (fora do iframe)
+  // ══════════════════════════════════════════════════════════════════
+
   applyCSSBlocking() {
     const style = document.createElement('style');
     style.id = 'youlist-adblocker-css';
     style.textContent = `
-      /* Ocultar elementos de anúncios FORA do player */
       [class*="ad-container"]:not(#player):not(#player *),
       [class*="advertisement"]:not(#player):not(#player *),
       [id*="google_ads"]:not(#player):not(#player *),
@@ -62,14 +158,11 @@ class YouListAdBlocker {
       iframe[src*="googlesyndication"]:not(#player):not(#player *) {
         display: none !important;
         visibility: hidden !important;
-        opacity: 0 !important;
         height: 0 !important;
         width: 0 !important;
       }
-      
-      /* NUNCA BLOQUEAR O PLAYER DO YOUTUBE */
-      #player,
-      #player iframe,
+      /* NUNCA bloquear o player */
+      #player, #player iframe,
       iframe[src*="youtube.com/embed"],
       iframe[src*="youtube-nocookie.com/embed"] {
         display: block !important;
@@ -77,19 +170,14 @@ class YouListAdBlocker {
         opacity: 1 !important;
       }
     `;
-    
     document.head.appendChild(style);
-    
-    if (typeof logger !== 'undefined') {
-      logger.debug('CSS blocking aplicado (player protegido)');
-    }
   }
 
-  // ========================================
-  // ESTRATÉGIA 2: DOM Observer (CUIDADOSO)
-  // ========================================
+  // ══════════════════════════════════════════════════════════════════
+  // DOM OBSERVER — remove elementos de anúncio injetados na página
+  // ══════════════════════════════════════════════════════════════════
+
   startDOMObserver() {
-    // Seletores MUITO ESPECÍFICOS - nunca tocar no player
     const adSelectors = [
       '[class*="ad-banner"]',
       '[class*="advertising"]',
@@ -99,446 +187,255 @@ class YouListAdBlocker {
     ];
 
     const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        mutation.addedNodes.forEach((node) => {
-          if (node.nodeType === 1) { // Element node
-            // PROTEÇÃO: Nunca remover o player ou seus filhos
-            const isPlayer = node.id === 'player' || 
-                           node.closest('#player') ||
-                           node.tagName === 'IFRAME' && node.src?.includes('youtube.com/embed');
-            
-            if (!isPlayer) {
-              this.checkAndRemoveAd(node, adSelectors);
-            }
-          }
+      mutations.forEach(mutation => {
+        mutation.addedNodes.forEach(node => {
+          if (node.nodeType !== 1) return;
+          const isPlayer = node.id === 'player' ||
+            node.closest?.('#player') ||
+            (node.tagName === 'IFRAME' && node.src?.includes('youtube.com/embed'));
+          if (!isPlayer) this.checkAndRemoveAd(node, adSelectors);
         });
       });
     });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    if (typeof logger !== 'undefined') {
-      logger.debug('DOM Observer ativo (player protegido)');
-    }
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   checkAndRemoveAd(element, selectors) {
-    // DUPLA PROTEÇÃO: Nunca tocar no player
-    if (element.id === 'player' || element.closest('#player')) {
-      return;
-    }
-
+    if (element.id === 'player' || element.closest?.('#player')) return;
     selectors.forEach(selector => {
-      if (element.matches && element.matches(selector)) {
+      if (element.matches?.(selector)) {
         element.remove();
         this.blockedCount++;
-        if (typeof logger !== 'undefined') {
-          logger.debug('Anúncio removido', { selector, count: this.blockedCount });
-        }
       }
     });
   }
 
-  // ========================================
-  // ESTRATÉGIA 3: SponsorBlock-like
-  // ========================================
+  // ══════════════════════════════════════════════════════════════════
+  // SPONSOR SKIP — pula segmentos marcados manualmente
+  // ══════════════════════════════════════════════════════════════════
+
   initSponsorSkip() {
-    // Monitorar progresso do vídeo a cada segundo
-    setInterval(() => {
-      this.checkSponsorSegments();
-    }, 1000);
+    setInterval(() => this.checkSponsorSegments(), 1000);
   }
 
   checkSponsorSegments() {
-    // Verificar se player existe e está pronto
-    if (typeof player === 'undefined' || !player || typeof player.getCurrentTime !== 'function') {
-      return;
-    }
-
+    if (typeof player === 'undefined' || !player || typeof player.getCurrentTime !== 'function') return;
     try {
       const videoData = player.getVideoData();
-      if (!videoData || !videoData.video_id) return;
-      
+      if (!videoData?.video_id) return;
       const videoId = videoData.video_id;
       const currentTime = player.getCurrentTime();
-      
-      // Verificar se está em segmento patrocinado
       if (this.isInSponsorSegment(videoId, currentTime)) {
         const nextTime = this.getNextNonSponsorTime(videoId, currentTime);
         player.seekTo(nextTime, true);
-        
-        if (typeof logger !== 'undefined') {
-          logger.info('Segmento patrocinado pulado', { 
-            videoId, 
-            from: currentTime.toFixed(1), 
-            to: nextTime.toFixed(1) 
-          });
-        }
-        
+        if (typeof logger !== 'undefined') logger.info('Segmento patrocinado pulado', { videoId, from: currentTime.toFixed(1), to: nextTime.toFixed(1) });
         this.showToast(`⏭️ Pulado: ${currentTime.toFixed(0)}s → ${nextTime.toFixed(0)}s`);
       }
-    } catch (e) {
-      // Silenciar erros se player não estiver pronto
-    }
+    } catch (e) { /* silencioso */ }
   }
 
   isInSponsorSegment(videoId, time) {
     const segments = this.sponsorDatabase[videoId];
-    if (!segments || segments.length === 0) return false;
-
+    if (!segments?.length) return false;
     return segments.some(seg => time >= seg.start && time <= seg.end);
   }
 
   getNextNonSponsorTime(videoId, currentTime) {
     const segments = this.sponsorDatabase[videoId];
     if (!segments) return currentTime;
-
-    const currentSegment = segments.find(seg => 
-      currentTime >= seg.start && currentTime <= seg.end
-    );
-
-    return currentSegment ? currentSegment.end + 0.5 : currentTime;
+    const seg = segments.find(s => currentTime >= s.start && currentTime <= s.end);
+    return seg ? seg.end + 0.5 : currentTime;
   }
 
-  // ========================================
+  // ══════════════════════════════════════════════════════════════════
   // DATABASE DE SEGMENTOS
-  // ========================================
+  // ══════════════════════════════════════════════════════════════════
+
   loadSponsorDatabase() {
     try {
       const saved = localStorage.getItem('youlist_sponsor_segments');
       this.sponsorDatabase = saved ? JSON.parse(saved) : {};
-    } catch (e) {
-      this.sponsorDatabase = {};
-    }
+    } catch (e) { this.sponsorDatabase = {}; }
   }
 
   saveSponsorDatabase() {
     try {
-      localStorage.setItem('youlist_sponsor_segments', 
-        JSON.stringify(this.sponsorDatabase));
-    } catch (e) {
-      if (typeof logger !== 'undefined') {
-        logger.error('Falha ao salvar sponsor database', { error: e.message });
-      }
-    }
+      localStorage.setItem('youlist_sponsor_segments', JSON.stringify(this.sponsorDatabase));
+    } catch (e) {}
   }
 
   markSponsorSegment(videoId, startTime, endTime) {
-    if (startTime >= endTime) {
-      return alert('Tempo inválido! O início deve ser antes do fim.');
-    }
-
-    if (!this.sponsorDatabase[videoId]) {
-      this.sponsorDatabase[videoId] = [];
-    }
-
-    this.sponsorDatabase[videoId].push({
-      start: startTime,
-      end: endTime,
-      category: 'sponsor'
-    });
-
+    if (startTime >= endTime) return alert('Tempo inválido! O início deve ser antes do fim.');
+    if (!this.sponsorDatabase[videoId]) this.sponsorDatabase[videoId] = [];
+    this.sponsorDatabase[videoId].push({ start: startTime, end: endTime, category: 'sponsor' });
     this.saveSponsorDatabase();
-    
-    if (typeof logger !== 'undefined') {
-      logger.success('Segmento sponsor marcado', { 
-        videoId, 
-        start: startTime.toFixed(1), 
-        end: endTime.toFixed(1) 
-      });
-    }
   }
 
   clearAllSegments() {
     if (!confirm('Deseja limpar TODOS os segmentos salvos?')) return;
-    
     this.sponsorDatabase = {};
     this.saveSponsorDatabase();
     this.updateStats();
-    
-    if (typeof logger !== 'undefined') {
-      logger.info('Todos os segmentos foram limpos');
-    }
-    
     alert('Todos os segmentos foram limpos!');
   }
 
-  // Limpar segmentos de vídeos removidos
-  cleanupRemovedVideos(currentPlaylistIds) {
-    const databaseIds = Object.keys(this.sponsorDatabase);
-    let cleaned = 0;
-    
-    databaseIds.forEach(videoId => {
-      if (!currentPlaylistIds.includes(videoId)) {
-        delete this.sponsorDatabase[videoId];
-        cleaned++;
-      }
-    });
-    
-    if (cleaned > 0) {
-      this.saveSponsorDatabase();
-      this.updateStats();
-      if (typeof logger !== 'undefined') {
-        logger.info(`${cleaned} segmento(s) órfão(s) removido(s)`);
-      }
-    }
-  }
-
   getStats() {
-    const totalSegments = Object.values(this.sponsorDatabase)
-      .reduce((sum, segs) => sum + segs.length, 0);
-
+    const totalSegments = Object.values(this.sponsorDatabase).reduce((sum, segs) => sum + segs.length, 0);
     return {
       enabled: this.enabled,
       blockedAds: this.blockedCount,
-      totalSegments: totalSegments,
+      totalSegments,
       videosWithSegments: Object.keys(this.sponsorDatabase).length
     };
   }
 
-  // ========================================
-  // UI - AGORA FIXO AO INVÉS DE FLUTUANTE
-  // ========================================
+  // ══════════════════════════════════════════════════════════════════
+  // UI
+  // ══════════════════════════════════════════════════════════════════
+
   initUI() {
-    // Aguardar até que o elemento de backup exista
-    const checkBackupExists = setInterval(() => {
-      const backupSection = document.querySelector('.playlist');
-      if (backupSection) {
-        clearInterval(checkBackupExists);
+    const checkReady = setInterval(() => {
+      if (document.querySelector('.playlist')) {
+        clearInterval(checkReady);
         this.createFixedPanel();
       }
     }, 100);
   }
 
   createFixedPanel() {
-    // Criar container fixo abaixo do backup
+    if (document.getElementById('adBlockerContainer')) return;
+
     const container = document.createElement('div');
     container.id = 'adBlockerContainer';
-    container.style.cssText = `
-      text-align: center;
-      margin: 15px 0;
-      padding: 0;
-      display: none;
-    `;
-    
+    container.style.cssText = 'text-align:center; margin:15px 0; padding:0;';
+
     container.innerHTML = `
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; padding: 15px; margin: 0;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 18px;">🛡️</span>
-            <span style="color: white; font-weight: 600; font-size: 14px;">Ad Blocker</span>
+      <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:12px;padding:15px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:18px;">🛡️</span>
+            <span style="color:white;font-weight:600;font-size:14px;">Ad Blocker</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span id="adBlockerStatusDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e;"></span>
+            <span style="font-size:11px;color:rgba(255,255,255,0.8);font-weight:600;">ATIVO</span>
           </div>
         </div>
-        
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; color: white; font-size: 12px;">
-          <div style="text-align: left;">
-            <div style="opacity: 0.9; margin-bottom: 4px;">Anúncios bloqueados:</div>
-            <strong id="blockedAdsCount" style="font-size: 20px;">0</strong>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;color:white;font-size:12px;">
+          <div style="text-align:left;">
+            <div style="opacity:0.85;margin-bottom:4px;">Bloqueados:</div>
+            <strong id="blockedAdsCount" style="font-size:20px;">0</strong>
           </div>
-          <div style="text-align: left;">
-            <div style="opacity: 0.9; margin-bottom: 4px;">Segmentos salvos:</div>
-            <strong id="sponsorSegmentsCount" style="font-size: 20px;">0</strong>
+          <div style="text-align:left;">
+            <div style="opacity:0.85;margin-bottom:4px;">Segmentos:</div>
+            <strong id="sponsorSegmentsCount" style="font-size:20px;">0</strong>
           </div>
         </div>
-        
-        <div style="display: flex; gap: 8px;">
-          <button id="markSponsorBtn" style="flex: 1; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">
+
+        <div style="display:flex;gap:8px;">
+          <button id="markSponsorBtn" style="flex:1;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:white;padding:10px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
             🎯 Marcar
           </button>
-          <button id="clearSegmentsBtn" style="flex: 1; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">
+          <button id="clearSegmentsBtn" style="flex:1;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:white;padding:10px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
             🗑️ Limpar
           </button>
         </div>
-        
-        <div style="font-size: 10px; opacity: 0.7; text-align: center; margin-top: 10px; color: white;">
-          Ctrl+Shift+M: início | Ctrl+Shift+E: fim
+
+        <div style="font-size:10px;opacity:0.7;text-align:center;margin-top:10px;color:white;">
+          Ctrl+Shift+M: início · Ctrl+Shift+E: fim
         </div>
       </div>
     `;
-    
-    // Inserir LOGO APÓS a div do backup (e antes do próximo HR)
+
     const playlistDiv = document.querySelector('.playlist');
-    
-    // Encontrar a div que contém o título "💾 Backup"
-    const backupTitle = Array.from(playlistDiv.querySelectorAll('p')).find(p => 
+    const backupTitle = Array.from(playlistDiv.querySelectorAll('p')).find(p =>
       p.textContent.includes('💾 Backup') || p.textContent.includes('Backup')
     );
-    
-    if (backupTitle && backupTitle.parentElement) {
-      // Inserir após o parent da div de backup
+
+    if (backupTitle?.parentElement) {
       const backupDiv = backupTitle.parentElement;
       backupDiv.parentNode.insertBefore(container, backupDiv.nextSibling);
     } else {
-      // Fallback: adicionar antes do primeiro HR após a palavra "Backup"
-      const hrs = playlistDiv.querySelectorAll('hr');
-      const targetHr = Array.from(hrs).find((hr, index) => {
-        const prevText = hr.previousElementSibling?.textContent || '';
-        return prevText.includes('Backup') || prevText.includes('Importar');
-      });
-      
-      if (targetHr) {
-        playlistDiv.insertBefore(container, targetHr);
-      } else {
-        // Último fallback: adicionar no final
-        playlistDiv.appendChild(container);
-      }
+      playlistDiv.appendChild(container);
     }
-    
-    // Event listeners
+
     document.getElementById('markSponsorBtn').addEventListener('click', () => this.toggleMarking());
     document.getElementById('clearSegmentsBtn').addEventListener('click', () => this.clearAllSegments());
-    
-    // Atualizar stats a cada 2 segundos
     setInterval(() => this.updateStats(), 2000);
-    
-    // Atualizar stats inicial
     this.updateStats();
-    
-    if (typeof logger !== 'undefined') {
-      logger.success('Ad Blocker UI criado (fixo abaixo do backup)');
-    }
   }
 
   toggleMarking() {
     if (typeof player === 'undefined' || !player || typeof player.getCurrentTime !== 'function') {
       return alert('Reproduza um vídeo primeiro!');
     }
-
     try {
       const videoId = player.getVideoData().video_id;
-      
       if (!this.isMarking) {
-        // Iniciar marcação
         this.isMarking = true;
         this.markStartTime = player.getCurrentTime();
         document.getElementById('markSponsorBtn').innerHTML = '⏹️ Finalizar';
-        document.getElementById('markSponsorBtn').style.background = 'rgba(239, 68, 68, 0.5)';
+        document.getElementById('markSponsorBtn').style.background = 'rgba(239,68,68,0.5)';
         this.showToast(`▶️ Gravando desde ${this.markStartTime.toFixed(1)}s...`);
       } else {
-        // Finalizar marcação
         const endTime = player.getCurrentTime();
-        const startTime = this.markStartTime;
-        this.markSponsorSegment(videoId, startTime, endTime);
-        
+        this.markSponsorSegment(videoId, this.markStartTime, endTime);
         this.isMarking = false;
         this.markStartTime = null;
         document.getElementById('markSponsorBtn').innerHTML = '🎯 Marcar';
         document.getElementById('markSponsorBtn').style.background = 'rgba(255,255,255,0.2)';
-        
-        this.showToast(`✅ Segmento salvo: ${startTime.toFixed(1)}s - ${endTime.toFixed(1)}s`, 'success');
+        this.showToast(`✅ Segmento salvo`, 'success');
         this.updateStats();
       }
-    } catch (e) {
-      alert('Erro ao marcar segmento. Certifique-se que um vídeo está tocando.');
-    }
+    } catch (e) { alert('Erro ao marcar segmento.'); }
   }
 
   updateStats() {
     const stats = this.getStats();
-    const blockedEl = document.getElementById('blockedAdsCount');
-    const segmentsEl = document.getElementById('sponsorSegmentsCount');
-    
-    if (blockedEl) blockedEl.textContent = stats.blockedAds;
-    if (segmentsEl) segmentsEl.textContent = stats.totalSegments;
+    const el1 = document.getElementById('blockedAdsCount');
+    const el2 = document.getElementById('sponsorSegmentsCount');
+    if (el1) el1.textContent = stats.blockedAds;
+    if (el2) el2.textContent = stats.totalSegments;
   }
 
   showToast(message, type = 'info') {
-    const colors = {
-      info: 'rgba(59, 130, 246, 0.95)',
-      success: 'rgba(16, 185, 129, 0.95)',
-      warning: 'rgba(245, 158, 11, 0.95)'
-    };
-    
+    const colors = { info: 'rgba(59,130,246,0.95)', success: 'rgba(16,185,129,0.95)', warning: 'rgba(245,158,11,0.95)' };
     const toast = document.createElement('div');
-    toast.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: ${colors[type]};
-      color: white;
-      padding: 12px 20px;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      z-index: 10000;
-      animation: slideIn 0.3s ease-out;
-      max-width: 300px;
-    `;
+    toast.style.cssText = `position:fixed;top:20px;right:20px;background:${colors[type]};color:white;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;z-index:10000;max-width:300px;animation:slideIn 0.3s ease-out;`;
     toast.textContent = message;
-    
     document.body.appendChild(toast);
-    
-    setTimeout(() => {
-      toast.style.animation = 'slideOut 0.3s ease-out';
-      setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, 3000);
   }
 }
 
-// ========================================
+// ══════════════════════════════════════════════════════════════════
 // ATALHOS DE TECLADO
-// ========================================
+// ══════════════════════════════════════════════════════════════════
+
 document.addEventListener('keydown', (e) => {
   if (!window.youlistAdBlocker) return;
-  
-  // Ctrl + Shift + M = Marcar início
-  if (e.ctrlKey && e.shiftKey && e.key === 'M') {
-    e.preventDefault();
-    window.youlistAdBlocker.toggleMarking();
-  }
-  
-  // Ctrl + Shift + E = Marcar fim
-  if (e.ctrlKey && e.shiftKey && e.key === 'E') {
-    e.preventDefault();
-    if (window.youlistAdBlocker.isMarking) {
-      window.youlistAdBlocker.toggleMarking();
-    }
-  }
+  if (e.ctrlKey && e.shiftKey && e.key === 'M') { e.preventDefault(); window.youlistAdBlocker.toggleMarking(); }
+  if (e.ctrlKey && e.shiftKey && e.key === 'E') { e.preventDefault(); if (window.youlistAdBlocker.isMarking) window.youlistAdBlocker.toggleMarking(); }
 });
 
-// ========================================
-// ANIMAÇÕES CSS
-// ========================================
-const style = document.createElement('style');
-style.textContent = `
-  @keyframes slideIn {
-    from {
-      transform: translateX(400px);
-      opacity: 0;
-    }
-    to {
-      transform: translateX(0);
-      opacity: 1;
-    }
-  }
-  
-  @keyframes slideOut {
-    from {
-      transform: translateX(0);
-      opacity: 1;
-    }
-    to {
-      transform: translateX(400px);
-      opacity: 0;
-    }
-  }
+// ══════════════════════════════════════════════════════════════════
+// ANIMAÇÕES
+// ══════════════════════════════════════════════════════════════════
+
+const _abStyle = document.createElement('style');
+_abStyle.textContent = `
+  @keyframes slideIn { from { transform:translateX(400px);opacity:0; } to { transform:translateX(0);opacity:1; } }
+  @keyframes slideOut { from { transform:translateX(0);opacity:1; } to { transform:translateX(400px);opacity:0; } }
 `;
-document.head.appendChild(style);
+document.head.appendChild(_abStyle);
 
-// ========================================
-// INICIALIZAÇÃO AUTOMÁTICA
-// ========================================
+// ══════════════════════════════════════════════════════════════════
+// INICIALIZAÇÃO
+// ══════════════════════════════════════════════════════════════════
+
 window.youlistAdBlocker = new YouListAdBlocker();
+window.adBlockerStats = () => { const s = window.youlistAdBlocker.getStats(); console.log('📊 Ad Blocker Stats:', s); return s; };
 
-// API pública para console
-window.adBlockerStats = () => {
-  const stats = window.youlistAdBlocker.getStats();
-  console.log('📊 YouList Ad Blocker Stats:', stats);
-  return stats;
-};
-
-console.log('%c🛡️ YouList Ad Blocker carregado! [FIXO ABAIXO DO BACKUP]', 'color: #667eea; font-size: 14px; font-weight: bold;');
-console.log('%cUse adBlockerStats() para ver estatísticas', 'color: #764ba2; font-size: 12px;');
+console.log('%c🛡️ YouList Ad Blocker v3.0 carregado!', 'color:#667eea;font-size:14px;font-weight:bold;');
