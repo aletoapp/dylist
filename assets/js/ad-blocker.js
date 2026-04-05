@@ -1,12 +1,20 @@
 /**
- * YouList Ad Blocker System v3.1
+ * YouList Ad Blocker System v3.2
  * Estratégia real de bloqueio de anúncios no YouTube IFrame Player
  *
  * MODO SEGURO (padrão, 2026):
  *   - CSS Blocking: oculta anúncios externos, NUNCA toca no #player
- *   - SponsorSkip: pula segmentos manuais via seekTo() (API nativa, indetectável)
+ *   - SponsorSkip: pula segmentos via seekTo() (API nativa, indetectável)
+ *     → Segmentos manuais (marcados pelo usuário)
+ *     → Segmentos da comunidade via API pública do SponsorBlock (sponsor.ajay.app)
  *   - DOM Observer: DESATIVADO por padrão — ativar via console se necessário:
  *       window.youlistAdBlocker.enableDOMObserver()
+ *
+ * SponsorBlock API:
+ *   Busca automática ao iniciar cada vídeo. Segmentos ficam em cache local
+ *   (youlist_sponsorblock_cache) para evitar chamadas repetidas.
+ *   Tipos buscados: sponsor, intro, outro, selfpromo, interaction, preview, filler
+ *   Créditos: https://sponsor.ajay.app — licença CC BY-NC-SA 4.0
  *
  * Por que DOM Observer desativado?
  *   Desde fev/2026 o YouTube detecta MutationObservers no body e aplica
@@ -30,6 +38,14 @@ class YouListAdBlocker {
     // Controle anti-loop do skip de anúncio
     this._lastAdSkipTime = 0;
     this._adSkipCooldown = 3000;
+
+    // SponsorBlock API — cache local e controle de requisição
+    this._sbCache = {};          // { videoId: { segments: [], fetchedAt: timestamp } }
+    this._sbFetching = new Set(); // IDs em requisição no momento (evita chamadas duplas)
+    this._sbCacheMaxAge = 24 * 60 * 60 * 1000; // 24h em ms
+    this._sbCategories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction', 'preview', 'filler'];
+    this._sbSkippedCount = 0;
+    this._loadSBCache();
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => this.init());
@@ -167,11 +183,13 @@ class YouListAdBlocker {
   }
 
   // Chamado pelo player.js quando um vídeo começa a tocar
-  // Registra o ID e duração do vídeo atual para comparação
   trackCurrentVideo(videoId, duration) {
     this._currentVideoId = videoId;
     this._currentVideoDuration = duration || 0;
     this._currentVideoTime = 0;
+
+    // Disparar busca automática na API do SponsorBlock
+    this.fetchSponsorBlockSegments(videoId);
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -258,11 +276,23 @@ class YouListAdBlocker {
       if (!videoData?.video_id) return;
       const videoId = videoData.video_id;
       const currentTime = player.getCurrentTime();
+
+      // 1️⃣ Segmentos manuais do usuário
       if (this.isInSponsorSegment(videoId, currentTime)) {
         const nextTime = this.getNextNonSponsorTime(videoId, currentTime);
         player.seekTo(nextTime, true);
-        if (typeof logger !== 'undefined') logger.info('Segmento patrocinado pulado', { videoId, from: currentTime.toFixed(1), to: nextTime.toFixed(1) });
-        this.showToast(`⏭️ Pulado: ${currentTime.toFixed(0)}s → ${nextTime.toFixed(0)}s`);
+        if (typeof logger !== 'undefined') logger.info('Segmento manual pulado', { videoId, from: currentTime.toFixed(1), to: nextTime.toFixed(1) });
+        this.showToast(`⏭️ Pulado (manual): ${currentTime.toFixed(0)}s → ${nextTime.toFixed(0)}s`);
+        return;
+      }
+
+      // 2️⃣ Segmentos da comunidade via SponsorBlock
+      if (this._isSBSegment(videoId, currentTime)) {
+        const nextTime = this._getNextSBTime(videoId, currentTime);
+        player.seekTo(nextTime, true);
+        this._sbSkippedCount++;
+        if (typeof logger !== 'undefined') logger.info('SponsorBlock: segmento pulado', { videoId, from: currentTime.toFixed(1), to: nextTime.toFixed(1) });
+        this.showToast(`📡 SponsorBlock: ${currentTime.toFixed(0)}s → ${nextTime.toFixed(0)}s`, 'success');
       }
     } catch (e) { /* silencioso */ }
   }
@@ -313,13 +343,97 @@ class YouListAdBlocker {
   }
 
   getStats() {
-    const totalSegments = Object.values(this.sponsorDatabase).reduce((sum, segs) => sum + segs.length, 0);
+    const manualSegs = Object.values(this.sponsorDatabase).reduce((sum, segs) => sum + segs.length, 0);
+    const sbSegs = Object.values(this._sbCache).reduce((sum, entry) => sum + (entry.segments?.length || 0), 0);
     return {
       enabled: this.enabled,
       blockedAds: this.blockedCount,
-      totalSegments,
+      totalSegments: manualSegs,
+      sbSegments: sbSegs,
+      sbSkipped: this._sbSkippedCount,
       videosWithSegments: Object.keys(this.sponsorDatabase).length
     };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // SPONSORBLOCK API — busca automática de segmentos da comunidade
+  // ══════════════════════════════════════════════════════════════════
+
+  // Chamado pelo player.js (trackCurrentVideo) ao iniciar cada vídeo
+  fetchSponsorBlockSegments(videoId) {
+    if (!videoId) return;
+
+    // Já está em cache válido?
+    const cached = this._sbCache[videoId];
+    if (cached && (Date.now() - cached.fetchedAt) < this._sbCacheMaxAge) {
+      if (typeof logger !== 'undefined') logger.debug('SponsorBlock: cache hit', { videoId, segments: cached.segments.length });
+      return;
+    }
+
+    // Já buscando?
+    if (this._sbFetching.has(videoId)) return;
+    this._sbFetching.add(videoId);
+
+    const cats = this._sbCategories.map(c => `categories=${encodeURIComponent(c)}`).join('&');
+    const url = `https://sponsor.ajay.app/api/skipSegments?videoID=${videoId}&${cats}&actionType=skip`;
+
+    fetch(url)
+      .then(res => {
+        if (res.status === 404) return []; // Vídeo sem segmentos cadastrados
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        const segments = Array.isArray(data)
+          ? data.map(s => ({ start: s.segment[0], end: s.segment[1], category: s.category, source: 'sponsorblock' }))
+          : [];
+
+        this._sbCache[videoId] = { segments, fetchedAt: Date.now() };
+        this._saveSBCache();
+
+        if (typeof logger !== 'undefined') logger.info('SponsorBlock: segmentos carregados', { videoId, count: segments.length });
+        if (segments.length > 0) this.showToast(`📡 SponsorBlock: ${segments.length} segmento(s) carregado(s)`, 'info');
+      })
+      .catch(err => {
+        // Falha silenciosa — não quebra nada
+        if (typeof logger !== 'undefined') logger.warn('SponsorBlock: falha na API', { videoId, error: err.message });
+      })
+      .finally(() => {
+        this._sbFetching.delete(videoId);
+      });
+  }
+
+  _isSBSegment(videoId, time) {
+    const entry = this._sbCache[videoId];
+    if (!entry?.segments?.length) return false;
+    return entry.segments.some(seg => time >= seg.start && time <= seg.end);
+  }
+
+  _getNextSBTime(videoId, currentTime) {
+    const entry = this._sbCache[videoId];
+    if (!entry?.segments) return currentTime;
+    const seg = entry.segments.find(s => currentTime >= s.start && currentTime <= s.end);
+    return seg ? seg.end + 0.5 : currentTime;
+  }
+
+  _loadSBCache() {
+    try {
+      const saved = localStorage.getItem('youlist_sponsorblock_cache');
+      if (saved) {
+        const raw = JSON.parse(saved);
+        // Descartar entradas expiradas ao carregar
+        const now = Date.now();
+        Object.keys(raw).forEach(id => {
+          if ((now - raw[id].fetchedAt) < this._sbCacheMaxAge) this._sbCache[id] = raw[id];
+        });
+      }
+    } catch (e) { this._sbCache = {}; }
+  }
+
+  _saveSBCache() {
+    try {
+      localStorage.setItem('youlist_sponsorblock_cache', JSON.stringify(this._sbCache));
+    } catch (e) { /* silencioso — localStorage pode estar cheio */ }
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -355,14 +469,18 @@ class YouListAdBlocker {
           </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;color:white;font-size:12px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;color:white;font-size:12px;">
           <div style="text-align:left;">
             <div style="opacity:0.85;margin-bottom:4px;">Bloqueados:</div>
-            <strong id="blockedAdsCount" style="font-size:20px;">0</strong>
+            <strong id="blockedAdsCount" style="font-size:18px;">0</strong>
           </div>
           <div style="text-align:left;">
-            <div style="opacity:0.85;margin-bottom:4px;">Segmentos:</div>
-            <strong id="sponsorSegmentsCount" style="font-size:20px;">0</strong>
+            <div style="opacity:0.85;margin-bottom:4px;">Manuais:</div>
+            <strong id="sponsorSegmentsCount" style="font-size:18px;">0</strong>
+          </div>
+          <div style="text-align:left;">
+            <div style="opacity:0.85;margin-bottom:4px;">📡 SB:</div>
+            <strong id="sbSkippedCount" style="font-size:18px;">0</strong>
           </div>
         </div>
 
@@ -376,7 +494,7 @@ class YouListAdBlocker {
         </div>
 
         <div style="font-size:10px;opacity:0.7;text-align:center;margin-top:10px;color:white;">
-          Ctrl+Shift+M: início · Ctrl+Shift+E: fim
+          Ctrl+Shift+M: início · Ctrl+Shift+E: fim · 📡 SponsorBlock ativo
         </div>
       </div>
     `;
@@ -428,8 +546,10 @@ class YouListAdBlocker {
     const stats = this.getStats();
     const el1 = document.getElementById('blockedAdsCount');
     const el2 = document.getElementById('sponsorSegmentsCount');
+    const el3 = document.getElementById('sbSkippedCount');
     if (el1) el1.textContent = stats.blockedAds;
     if (el2) el2.textContent = stats.totalSegments;
+    if (el3) el3.textContent = stats.sbSkipped;
   }
 
   showToast(message, type = 'info') {
@@ -470,5 +590,6 @@ document.head.appendChild(_abStyle);
 window.youlistAdBlocker = new YouListAdBlocker();
 window.adBlockerStats = () => { const s = window.youlistAdBlocker.getStats(); console.log('📊 Ad Blocker Stats:', s); return s; };
 
-console.log('%c🛡️ YouList Ad Blocker v3.1 — Modo Seguro 2026', 'color:#667eea;font-size:14px;font-weight:bold;');
+console.log('%c🛡️ YouList Ad Blocker v3.2 — Modo Seguro 2026 + SponsorBlock', 'color:#667eea;font-size:14px;font-weight:bold;');
 console.log('%cDOM Observer desativado por padrão. Para ativar: window.youlistAdBlocker.enableDOMObserver()', 'color:#94a3b8;font-size:11px;');
+console.log('%c📡 SponsorBlock API integrada — segmentos carregados automaticamente ao iniciar cada vídeo', 'color:#22c55e;font-size:11px;');
