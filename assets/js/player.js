@@ -31,21 +31,32 @@ function initializePlayer() {
     player = new YT.Player('player', {
       height: '400',
       width: '100%',
-      videoId: '', // Começa vazio
+      videoId: '',
       playerVars: {
-        autoplay: 0,
-        controls: 1,
-        modestbranding: 1,
-        rel: 0,
-        enablejsapi: 1
+        autoplay:        0,
+        controls:        1,
+        modestbranding:  1,
+        // rel:0 em 2026 mostra apenas vídeos do mesmo canal (não desativa mais)
+        rel:             0,
+        enablejsapi:     1,
+        // Desativa anotações (descontinuadas mas ainda presentes em alguns vídeos)
+        iv_load_policy:  3,
+        // Evita que o player exiba o título e info do canal sobre o vídeo
+        playsinline:     1,
+        // Previne que o YouTube force fullscreen em mobile para Shorts
+        fs:              1,
+        // Idioma da interface — respeita o idioma do browser
+        hl:              navigator.language?.split('-')[0] || 'pt',
+        // Desativa o cc automático
+        cc_load_policy:  0
       },
       events: {
-        onReady: onPlayerReady,
+        onReady:       onPlayerReady,
         onStateChange: onPlayerStateChange,
-        onError: onPlayerError
+        onError:       onPlayerError
       }
     });
-    logger.success('Player inicializado');
+    logger.success('Player inicializado (2026 API)');
   } catch (error) {
     logger.error('Erro ao inicializar player', { error: error.message });
   }
@@ -98,6 +109,31 @@ function onPlayerStateChange(event) {
   const stateName = states[event.data] || 'UNKNOWN';
   logger.debug('Player state changed', { state: stateName });
 
+  // ── Guard anti-adblock do YouTube (2026) ──────────────────────────────────
+  // O YouTube force-skip para o fim quando detecta interferência.
+  // Se o vídeo "terminar" em menos de 5s após começar, é provável que
+  // seja o YouTube forçando o skip — recarregamos o vídeo ao invés de avançar.
+  if (event.data === YT.PlayerState.ENDED) {
+    const currentTime = player.getCurrentTime?.() || 0;
+    const duration    = player.getDuration?.()    || 0;
+    const expectedId  = playlist[playQueue[currentIndex]]?.id;
+    const actualId    = player.getVideoData?.()?.video_id;
+
+    // Se terminou muito cedo E o vídeo da fila ainda é o mesmo → YouTube forçou skip
+    const forcedSkip = duration > 30 && currentTime < 5 && expectedId && expectedId === actualId;
+    if (forcedSkip) {
+      logger.warn('Anti-adblock detectado: YouTube forçou skip. Recarregando vídeo...');
+      setTimeout(() => {
+        try { player.loadVideoById(expectedId, 0); } catch (e) {}
+      }, 800);
+      return; // Não chama handleVideoEnded()
+    }
+
+    logger.info('Vídeo finalizado', { index: currentIndex });
+    handleVideoEnded();
+    return;
+  }
+
   // Quando começar a tocar
   if (event.data === YT.PlayerState.PLAYING) {
     let currentTitle = "Reproduzindo...";
@@ -118,6 +154,15 @@ function onPlayerStateChange(event) {
       try {
         const dur = player.getDuration ? player.getDuration() : 0;
         window.youlistAdBlocker.trackCurrentVideo(playlist[currentIndex].id, dur);
+
+        // Detectar Short (duração <= 180s) e adaptar container
+        if (dur > 0 && dur <= 180) {
+          const playerEl = document.getElementById('player');
+          if (playerEl) playerEl.style.aspectRatio = '9/16';
+        } else {
+          const playerEl = document.getElementById('player');
+          if (playerEl) playerEl.style.aspectRatio = '';
+        }
       } catch (e) {}
     }
 
@@ -128,39 +173,31 @@ function onPlayerStateChange(event) {
       player.setPlaybackRate(playbackSpeed);
     }
     
-    // Modo áudio only REMOVIDO
-    
-    // Atualizar barra de progresso
     startProgressUpdater();
   }
 
   // Quando pausar
   if (event.data === YT.PlayerState.PAUSED) {
     stopProgressUpdater();
-    // Modo áudio REMOVIDO
-  }
-
-  // Quando vídeo terminar
-  if (event.data === YT.PlayerState.ENDED) {
-    logger.info('Vídeo finalizado', { index: currentIndex });
-    handleVideoEnded();
   }
 }
 
 function onPlayerError(event) {
   const errors = {
-    2: 'Request inválido',
-    5: 'Erro HTML5 Player',
-    100: 'Vídeo não encontrado',
+    2:   'Request inválido (parâmetro inválido)',
+    5:   'Erro HTML5 Player',
+    100: 'Vídeo não encontrado ou removido',
     101: 'Vídeo não permitido para embed',
     150: 'Vídeo não permitido para embed'
   };
   
-  const errorMsg = errors[event.data] || 'Erro desconhecido';
+  const errorMsg = errors[event.data] || `Erro desconhecido (${event.data})`;
   logger.trackError('YouTube Player', errorMsg, `Error code: ${event.data}`);
-  
-  alert(`Erro no player: ${errorMsg}\n\nPulando para próximo vídeo...`);
-  nextVideo();
+
+  // Silencioso — sem alert, apenas pula para o próximo
+  // O alert causava UX ruim e podia ser confundido com bloqueio do YouTube
+  showQuickToast(`⚠️ ${errorMsg} — pulando...`);
+  setTimeout(() => nextVideo(), 1200);
 }
 
 // === CONTROLES BÁSICOS ===
