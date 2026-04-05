@@ -35,7 +35,7 @@ function initializePlayer() {
       playerVars: {
         autoplay:        0,
         controls:        1,
-        modestbranding:  1,
+        // modestbranding removido — depreciado pelo YouTube desde 2023
         // rel:0 em 2026 mostra apenas vídeos do mesmo canal (não desativa mais)
         rel:             0,
         enablejsapi:     1,
@@ -116,7 +116,9 @@ function onPlayerStateChange(event) {
   if (event.data === YT.PlayerState.ENDED) {
     const currentTime = player.getCurrentTime?.() || 0;
     const duration    = player.getDuration?.()    || 0;
-    const expectedId  = playlist[playQueue[currentIndex]]?.id;
+    // FIX: Garante que playQueue[currentIndex] existe antes de acessar playlist
+    const queueEntry  = playQueue.length > 0 ? playQueue[currentIndex] : undefined;
+    const expectedId  = (queueEntry !== undefined) ? playlist[queueEntry]?.id : undefined;
     const actualId    = player.getVideoData?.()?.video_id;
 
     // Se terminou muito cedo E o vídeo da fila ainda é o mesmo → YouTube forçou skip
