@@ -139,21 +139,23 @@ class YouListAdBlocker {
         if (duration > 0) player.seekTo(duration, true);
       }
 
-      // Tenta nextVideo depois de 300ms como fallback
+      // Tenta nextVideo depois de 800ms como fallback (300ms era curto demais — race condition)
       setTimeout(() => {
         try {
           // Reativa o som
           if (typeof player.unMute === 'function') player.unMute();
 
           // Se ainda estiver fora do vídeo esperado, força o reload
+          // Dupla verificação: só recarrega se o ID ainda diverge APÓS 800ms
           if (typeof player.loadVideoById === 'function' && this._currentVideoId) {
             const data = player.getVideoData?.();
-            if (data && data.video_id !== this._currentVideoId) {
+            const stillWrong = data && data.video_id && data.video_id !== this._currentVideoId;
+            if (stillWrong) {
               player.loadVideoById(this._currentVideoId, this._currentVideoTime || 0);
             }
           }
         } catch (e) { /* silencioso */ }
-      }, 300);
+      }, 800);
 
       this.blockedCount++;
       this.updateStats();
