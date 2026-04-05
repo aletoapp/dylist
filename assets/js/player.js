@@ -112,7 +112,15 @@ function onPlayerStateChange(event) {
     } else if (player.getVideoData && player.getVideoData().title) {
       currentTitle = player.getVideoData().title;
     }
-    
+
+    // Registrar vídeo atual no ad blocker para detecção de anúncios
+    if (window.youlistAdBlocker && playlist[currentIndex]) {
+      try {
+        const dur = player.getDuration ? player.getDuration() : 0;
+        window.youlistAdBlocker.trackCurrentVideo(playlist[currentIndex].id, dur);
+      } catch (e) {}
+    }
+
     updateMediaSession(currentTitle);
     
     // Aplicar velocidade
