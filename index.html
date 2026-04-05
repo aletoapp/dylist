@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DyList — você lista, o show é por nossa conta!</title>
+    <meta name="description" content="Player de YouTube grátis com timer, categorias, 4 modos loop e 20+ features. Melhor que YouTube Premium. 100% grátis para sempre.">
+    <meta name="keywords" content="youtube sem ads, youtube premium gratis, player youtube, youtube background, timer youtube">
+
+    <meta property="og:title" content="DyList - YouTube Premium Grátis">
+    <meta property="og:description" content="Todas features do Premium + extras. Grátis para sempre.">
+    <meta property="og:image" content="https://ilist.online/og-image.jpg">
+    <meta property="og:url" content="https://ilist.online">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="DyList - YouTube Player Premium">
+    <meta name="twitter:description" content="Features premium + timer + categorias. 100% grátis.">
+    <meta name="twitter:image" content="https://ilist.online/twitter-card.jpg">
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "DyList",
+      "applicationCategory": "MultimediaApplication",
+      "operatingSystem": "Any",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "BRL"
+      },
+      "aggregateRating": {
+        "@type": "AggregateRating",
+        "ratingValue": "4.8",
+        "ratingCount": "127"
+      }
+    }
+    </script>
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0f172a">
+    
+    <link rel="icon" type="image/png" href="assets/img/favicon.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/img/apple-touch-icon-180.png">
+    
+    <meta name="description" content="DyList: você lista, o show é por nossa conta!">
+    <meta name="author" content="Alexandre Nunes Torres">
+    
+    <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+    <div class="box">
+        <div id="darkModeBtnWrapper"></div>
+        
+        <h3>Dy<span style="color:#FF9900">list</span>: você lista, o show é por nossa conta!</h3>
+        
+        <!-- Elementos ocultos para compatibilidade com app.js -->
+        <input id="urlInput" type="text" style="display:none;">
+        <button id="addBtn" style="display:none;"></button>
+        <button id="copiarPixBtn" style="display:none;"></button>
+
+        <div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+            <button class="btn-criar-categoria" id="openCategoriesBtn">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Criar Categoria
+            </button>
+            <button class="btn-buscar-videos" id="smartSearchBtn" onclick="if(window.smartSearchInstance){window.smartSearchInstance.openSmartSearchModal();}else{var m=document.getElementById('smartSearchModal');if(m)m.style.display='flex';}">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Buscar Vídeos
+            </button>
+            <button id="openEqualizerBtn" onclick="if(window.openEqualizer){window.openEqualizer();}else{document.getElementById('equalizerModal').style.display='flex';}" title="Equalizador" style="display:inline-flex;align-items:center;justify-content:center;padding:10px 16px;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#0e7490,#0284c7);color:#fff;transition:opacity 0.2s,transform 0.15s;font-family:'Source Sans Pro',sans-serif;margin-left:0;">♪</button>
+        </div>
+
+        <div id="categoriesModal" class="modal" onclick="closeModalOnOutsideClick(event, 'categoriesModal')">
+            <div class="modal-content category-modal-content" onclick="event.stopPropagation()">
+                <h3 style="margin-top: 0;">📁 Gerenciar Categorias</h3>
+                
+                <div class="category-create-section">
+                    <input type="text" id="newCategoryInput" class="category-input" placeholder="Nome da nova categoria" maxlength="25">
+                    <div class="color-selector">
+                        <label style="font-size:13px; color:#94a3b8; margin-bottom:8px; display:block;">Escolha uma cor:</label>
+                        <div class="color-grid" id="colorGrid"></div>
+                    </div>
+                    <button id="createCategoryBtn" class="btn-primary" style="width:100%; margin-top:10px;">Criar Categoria</button>
+                </div>
+                
+                <hr style="border:0; height:1px; background:rgba(255,255,255,0.1); margin:20px 0;">
+                
+                <div class="categories-list-section">
+                    <h4 style="font-size:14px; color:#94a3b8; margin-bottom:10px;">Categorias Existentes:</h4>
+                    <div id="categoriesList"></div>
+                </div>
+                
+                <button class="close-btn" id="closeCategoriesBtn">Fechar</button>
+            </div>
+        </div>
+
+        <div id="editCategoryModal" class="modal" onclick="closeModalOnOutsideClick(event, 'editCategoryModal')">
+            <div class="modal-content category-modal-content" onclick="event.stopPropagation()">
+                <h3 style="margin-top: 0;">✎ Editar Categoria</h3>
+                <input type="text" id="editCategoryInput" class="category-input" placeholder="Novo nome" maxlength="25">
+                <div class="color-selector">
+                    <label style="font-size:13px; color:#94a3b8; margin-bottom:8px; display:block;">Nova cor:</label>
+                    <div class="color-grid" id="editColorGrid"></div>
+                </div>
+                <button id="saveEditCategoryBtn" class="btn-primary" style="width:100%; margin-top:15px;">Salvar Alterações</button>
+                <button class="close-btn" id="closeEditCategoryBtn">Cancelar</button>
+            </div>
+        </div>
+
+        <div id="categorySelectModal" class="modal" onclick="closeModalOnOutsideClick(event, 'categorySelectModal')">
+            <div class="modal-content" onclick="event.stopPropagation()">
+                <h3 style="margin-top: 0;">📂 Escolha a Categoria</h3>
+                <p style="font-size:13px; color:#94a3b8;">Onde deseja salvar os vídeos?</p>
+                <div id="categorySelectList" style="display:flex; flex-direction:column; gap:10px; margin:15px 0;"></div>
+                <button class="close-btn" id="closeCategorySelectBtn">Cancelar</button>
+            </div>
+        </div>
+
+        <div id="player"></div>
+
+        <div class="player-controls-advanced">
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-bar" id="progressBar"></div>
+                <div class="progress-times">
+                    <span id="currentTime">0:00</span>
+                    <span id="duration">0:00</span>
+                </div>
+            </div>
+
+            <div class="main-controls">
+                <button class="control-btn" onclick="previousVideo()" title="Anterior (Ctrl+P)">⏮</button>
+                <button class="control-btn" onclick="skipBackward(10)" title="Voltar 10s (←)">⏪</button>
+                <button class="control-btn control-btn-primary" onclick="player && player.playVideo()" title="Play/Pause (Espaço)">▶️</button>
+                <button class="control-btn" onclick="skipForward(10)" title="Avançar 10s (→)">⏩</button>
+                <button class="control-btn" onclick="nextVideo()" title="Próximo (Ctrl+N)">⏭</button>
+            </div>
+
+            <div class="secondary-controls">
+                <button class="control-btn-small" id="loopModeBtn" onclick="toggleLoopMode()" title="Modo de repetição (Ctrl+L)">🔂 Normal</button>
+                
+                <div class="speed-control">
+                    <select id="speedSelect" onchange="changePlaybackSpeed(parseFloat(this.value))" class="speed-select">
+                        <option value="0.25">0.25x</option>
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1" selected>1x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="1.75">1.75x</option>
+                        <option value="2">2x</option>
+                    </select>
+                </div>
+
+                <div class="timer-control-inline">
+                    <select id="timerSelect" onchange="handleTimerSelect(this)" class="timer-select">
+                        <option value="0">⏱ Timer Off</option>
+                        <option value="15">15min</option>
+                        <option value="30">30min</option>
+                        <option value="45">45min</option>
+                        <option value="60">1h</option>
+                        <option value="90">1h30</option>
+                        <option value="120">2h</option>
+                    </select>
+                    <span id="timerDisplay" style="display:none;"></span>
+                </div>
+
+                <button class="control-btn-small btn-oled" onclick="ativarModoEscuro()" title="Modo OLED — tela preta, economia de bateria">🌙 OLED</button>
+                <button class="control-btn-small" onclick="document.getElementById('apiKeyChangeModal').style.display='flex'" title="Trocar chave da API do YouTube">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M21 2l-9.6 9.6"/><path d="M15.5 7.5l3 3L22 7l-3-3"/></svg>
+                </button>
+            </div>
+            <div id="timerCountdown" style="display:none; font-size:12px; color:#10b981; text-align:center; margin-top:6px; font-weight:600; letter-spacing:0.5px;"></div>
+        </div>
+
+        <center style="margin-top: 20px;">
+            <button id="instagramFollowBtn" style="background:transparent; color:#E9E9E9; border:0px solid #E9E9E9; border-radius:14px; transition:background 0.3s;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FF66CC" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="20" height="20" rx="5"/>
+                    <circle cx="12" cy="12" r="5"/>
+                    <line x1="17.5" y1="6.5" x2="17.5" y2="6.5"/>
+                </svg><br>alementoria
+            </button>
+        </center>
+
+        <center>
+            <span class="copy">
+                &copy;2026 DyList. Todos os direitos reservados.<br>
+                Desenvolvido por <strong>Alexandre Nunes Torres</strong><br>
+                <strong>@alementoria</strong>
+            </span>
+        </center>
+        <center style="margin-top:12px;">
+            <button onclick="if(window.tutorialSidebar){window.tutorialSidebar.openSidebar();}" title="Tutoriais (Ctrl+H)" style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity 0.2s,transform 0.15s;font-family:'Source Sans Pro',sans-serif;">🎓 Tutoriais</button>
+        </center>
+    </div>
+
+    <div class="playlist">
+        <div class="category-filters" id="categoryFilters"></div>
+        
+        <hr style="border:0; height:2px; background: linear-gradient(to right, #06b6d4, #f59e0b, #ef4444); margin:10px 0; border-radius:2px;">
+        
+        <div id="playlistContainer"></div>
+        
+        <div class="playlist-controls">
+            <button id="selectAllBtn" style="background:#8b5cf6;">Selecionar Todos</button>
+            <button id="playAllBtn">Reproduzir tudo</button>
+            <button id="playSelectedBtn">Reproduzir Selecionados</button>
+        </div>
+        
+        <hr style="border:0; height:2px; background: linear-gradient(to right, #06b6d4, #f59e0b, #ef4444); margin:10px 0; border-radius:2px;">
+        
+        <div class="playlist-controls" style="flex-direction: column; align-items: center; text-align: center;">
+            <button id="deleteSelectedBtn" style="background:#f59e0b; width: 100%;">Apagar Seleção</button>
+            <button id="confirmClearBtn" style="background:#ef4444; width: 100%;">Apagar Tudo</button>
+        </div>
+        
+        <hr style="border:0; height:1px; background: rgba(255,255,255,0.2); margin:15px 0;">
+        
+        <button id="installAppBtn" class="btn-install-pwa">
+            📲 Instalar DyList
+        </button>
+
+        
+        <hr style="border:0; height:2px; background: linear-gradient(to right, #06b6d4, #f59e0b, #ef4444); margin:10px 0; border-radius:2px;">
+        
+        <div style="text-align: center; margin: 10px 0;">
+            <p style="font-size: 13px; color: #94a3b8; margin-bottom: 10px; font-weight: 600;">💾 Backup</p>
+            <div style="display: flex; gap: 8px;">
+                <button id="exportBackupBtn" class="btn-backup" style="flex: 1; background: #10b981; color: #fff; padding: 10px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    <span>📤</span>
+                    <span>Exportar</span>
+                </button>
+                <button id="importBackupBtn" class="btn-backup" style="flex: 1; background: #3b82f6; color: #fff; padding: 10px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    <span>📥</span>
+                    <span>Importar</span>
+                </button>
+            </div>
+        </div>
+        
+        <hr style="border:0; height:1px; background: rgba(255,255,255,0.2); margin:15px 0;">
+        
+        <!-- <div class="donation-box">
+            <p style="margin-bottom:15px; font-size:15px; line-height:1.5;">
+                Curtiu a experiência DyList sem interrupções? <br>
+                Um gesto de generosidade seu, de qualquer valor, é o <b>'combustível premium'</b> que mantém o nosso domínio e hospedagem.<br>
+                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                </svg>
+                <br>Chave Pix (email):<br>
+                faledemim@gmail.com<br>
+                Alexandre Nunes Torres<br>
+                Mercado Pago
+            </p>
+            <center>
+                <button id="copiarPixBtn">Copiar Chave Pix</button>
+                <div id="msgPix">chave pix copiada</div>
+            </center>
+        </div>
+    </div>
+-->
+    <div id="confirmModal" class="modal" onclick="closeModalOnOutsideClick(event, 'confirmModal')">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <h3>Tem certeza que deseja apagar toda sua lista?</h3>
+            <div class="modal-buttons" style="flex-direction:row; justify-content:center; gap:20px;">
+                <button id="clearYesBtn">Sim</button>
+                <button class="close-btn" id="clearNoBtn">Não</button>
+            </div>
+        </div>
+    </div>
+
+
+    <div id="darkOverlay">
+        <div id="lamp">💡</div>
+        <span id="turnOn">acender a luz</span>
+    </div>
+
+    <div id="apiKeyChangeModal" onclick="if(event.target===this)this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:10100; align-items:center; justify-content:center;">
+        <div onclick="event.stopPropagation()" style="background:#1e293b; border-radius:12px; padding:24px; width:90%; max-width:380px; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+            <h3 style="margin:0 0 16px; color:#fff; font-size:16px; display:flex; align-items:center; gap:8px;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M21 2l-9.6 9.6"/><path d="M15.5 7.5l3 3L22 7l-3-3"/></svg>
+                Trocar API Key do YouTube
+            </h3>
+            <input id="apiKeyChangeInput" type="password" placeholder="Cole a nova chave aqui..." autocomplete="new-password"
+                style="width:100%; box-sizing:border-box; background:#0f172a; border:1.5px solid #334155; border-radius:8px; color:#f1f5f9; font-size:14px; padding:11px 14px; outline:none; margin-bottom:14px;">
+            <div style="display:flex; gap:8px;">
+                <button id="apiKeyChangeOkBtn" style="flex:1; background:#10b981; color:#fff; border:none; border-radius:8px; padding:11px; font-size:14px; font-weight:600; cursor:pointer; margin-left:0;">OK</button>
+                <button onclick="document.getElementById('apiKeyChangeModal').style.display='none'" style="flex:1; background:#334155; color:#94a3b8; border:none; border-radius:8px; padding:11px; font-size:14px; cursor:pointer; margin-left:0;">Cancelar</button>
+            </div>
+            <div id="apiKeyChangeMsg" style="display:none; margin-top:10px; font-size:12px; color:#10b981; text-align:center;">✅ Chave salva com sucesso!</div>
+        </div>
+    </div>
+
+    <script src="assets/js/dist/categories.js"></script>
+    <script src="assets/js/dist/app.js"></script>
+    <script src="assets/js/dist/player.js"></script>
+    <script src="assets/js/dist/ad-blocker.js"></script>
+    <script src="assets/js/dist/pwa.js"></script>
+    <script src="assets/js/dist/search-advanced.js"></script>
+    <script src="assets/js/dist/backup.js"></script>
+    <script src="assets/js/dist/sidebar.js"></script>
+    <script src="assets/js/dist/equalizer.js"></script>
+    
+    <script>
+        function closeModalOnOutsideClick(event, modalId) {
+            if (event.target.id === modalId) {
+                document.getElementById(modalId).style.display = 'none';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('apiKeyChangeOkBtn').addEventListener('click', function() {
+                const input = document.getElementById('apiKeyChangeInput');
+                const msg   = document.getElementById('apiKeyChangeMsg');
+                const key   = input.value.trim();
+                if (!key) {
+                    input.style.borderColor = '#ef4444';
+                    return;
+                }
+                localStorage.setItem('youtube_api_key', key);
+                input.value = '';
+                input.style.borderColor = '#10b981';
+                msg.style.display = 'block';
+                setTimeout(function() {
+                    document.getElementById('apiKeyChangeModal').style.display = 'none';
+                    msg.style.display  = 'none';
+                    input.style.borderColor = '#334155';
+                }, 1400);
+            });
+
+            document.getElementById('apiKeyChangeInput').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') document.getElementById('apiKeyChangeOkBtn').click();
+            });
+        });
+    </script>
+</body>
+</html>
